@@ -1,0 +1,7 @@
+.env
+__pycache__/
+*.pyc
+.venv/
+storage_state.json
+*.png
+finect_isin_index.json
