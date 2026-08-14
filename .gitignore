@@ -5,3 +5,9 @@ __pycache__/
 storage_state.json
 *.png
 finect_isin_index.json
+
+# scripts de desarrollo/depuracion, no necesarios para ejecutar la web
+CODEGEN_INSTRUCCIONES.md
+src/02_login_test.py
+src/03_patrimonio_test.py
+src/04_dashboard_test.py
