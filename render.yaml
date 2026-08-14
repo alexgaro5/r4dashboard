@@ -1,0 +1,7 @@
+services:
+  - type: web
+    name: r4dashboard
+    env: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    healthCheckPath: /
