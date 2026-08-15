@@ -19,6 +19,23 @@ SELECTORS = {
 }
 
 
+# Recursos que no hacen falta para leer datos/rellenar formularios: se
+# bloquean para bajar el consumo de memoria de Chromium (el plan free de
+# Render solo da 512MB, y cargar imagenes/fuentes/trackers de la pagina
+# completa lo agota facilmente).
+_BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
+
+
+def _block_unnecesary_resources(context):
+    def handle_route(route):
+        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+            route.abort()
+        else:
+            route.continue_()
+
+    context.route("**/*", handle_route)
+
+
 def _accept_cookies(page):
     candidates = [
         "a.button-accept-cookies",  # Cookiebot, el que usa r4.com
@@ -49,8 +66,25 @@ def login(username, password, headless=True):
     llama.
     """
     p = sync_playwright().start()
-    browser = p.chromium.launch(headless=headless)
+    browser = p.chromium.launch(
+        headless=headless,
+        args=[
+            # Reducen memoria/procesos de Chromium; necesarios para caber en
+            # los 512MB del plan free de Render.
+            "--disable-dev-shm-usage",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-default-apps",
+            "--disable-sync",
+            "--mute-audio",
+            "--no-first-run",
+            "--single-process",
+        ],
+    )
     context = browser.new_context()
+    _block_unnecesary_resources(context)
     page = context.new_page()
     page.goto(LOGIN_URL)
     _accept_cookies(page)
