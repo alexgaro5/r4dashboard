@@ -1,13 +1,6 @@
-import os
-
 from playwright.sync_api import sync_playwright
 
 LOGIN_URL = "https://www.r4.com/login"
-
-# Carpeta de diagnostico: si el login falla, volcamos captura + texto de la
-# pagina aqui para poder inspeccionarlos via /api/debug/last-failure sin
-# necesitar acceso SSH al contenedor de Render.
-DEBUG_DIR = "/tmp/r4_debug"
 
 # NIF fijo: no es un dato sensible (es publico/conocido), a diferencia de
 # usuario/contraseña que SIEMPRE llegan desde fuera (formulario del
@@ -42,22 +35,6 @@ def _accept_cookies(page):
             continue
 
 
-def _dump_debug_info(page):
-    """Vuelca captura + URL + texto visible de la pagina para poder ver por
-    que el login no redirigio fuera de /login (bloqueo geografico, captcha,
-    2FA...). No incluye usuario/contraseña, solo lo que muestra la pagina."""
-    try:
-        os.makedirs(DEBUG_DIR, exist_ok=True)
-        page.screenshot(path=os.path.join(DEBUG_DIR, "last_failure.png"), full_page=True)
-        with open(os.path.join(DEBUG_DIR, "last_failure.txt"), "w", encoding="utf-8") as f:
-            f.write(f"URL: {page.url}\n\n")
-            f.write(page.inner_text("body")[:5000])
-    except Exception as dump_exc:
-        # El diagnostico es best-effort: si falla, no debe ocultar el
-        # RuntimeError original del login.
-        print(f"No se pudo volcar diagnostico: {dump_exc}")
-
-
 def login(username, password, headless=True):
     """Devuelve (playwright, browser, context, page). El llamador es responsable
     de cerrar con browser.close() y playwright.stop() cuando termine.
@@ -84,15 +61,15 @@ def login(username, password, headless=True):
     page.click(SELECTORS["submit_button"])
 
     try:
-        page.wait_for_url(lambda url: "login" not in url, timeout=15000)
+        # 45s: en Render el redirect tras enviar el formulario puede tardar
+        # bastante mas que en local (arranque en frio, latencia UE).
+        page.wait_for_url(lambda url: "login" not in url, timeout=45000)
     except Exception:
-        _dump_debug_info(page)
         browser.close()
         p.stop()
         raise RuntimeError(
             "Login fallido: revisa usuario y contraseña "
-            "(o puede que la web pida una verificación adicional). "
-            "Detalles en /api/debug/last-failure."
+            "(o puede que la web pida una verificación adicional)."
         )
 
     return p, browser, context, page
