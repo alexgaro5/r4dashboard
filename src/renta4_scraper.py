@@ -25,10 +25,38 @@ SELECTORS = {
 # completa lo agota facilmente).
 _BLOCKED_RESOURCE_TYPES = {"image", "media", "font"}
 
+# Analytics/marketing/heatmaps/chat de terceros: ninguno hace falta para
+# login ni para leer las respuestas JSON del portal, y cada uno suma su
+# propio JS ejecutandose en memoria.
+_BLOCKED_DOMAINS = (
+    "google-analytics.com",
+    "googletagmanager.com",
+    "doubleclick.net",
+    "googlesyndication.com",
+    "googleadservices.com",
+    "connect.facebook.net",
+    "facebook.net",
+    "hotjar.com",
+    "hotjar.io",
+    "clarity.ms",
+    "criteo.com",
+    "adnxs.com",
+    "adsrvr.org",
+    "taboola.com",
+    "outbrain.com",
+    "intercom.io",
+    "segment.com",
+    "fullstory.com",
+    "mouseflow.com",
+)
+
 
 def _block_unnecesary_resources(context):
     def handle_route(route):
-        if route.request.resource_type in _BLOCKED_RESOURCE_TYPES:
+        request = route.request
+        if request.resource_type in _BLOCKED_RESOURCE_TYPES or any(
+            domain in request.url for domain in _BLOCKED_DOMAINS
+        ):
             route.abort()
         else:
             route.continue_()
@@ -81,9 +109,24 @@ def login(username, password, headless=True):
             "--mute-audio",
             "--no-first-run",
             "--single-process",
+            "--disable-software-rasterizer",
+            "--disable-background-timer-throttling",
+            "--disable-backgrounding-occluded-windows",
+            "--disable-renderer-backgrounding",
+            "--disable-ipc-flooding-protection",
+            "--disable-domain-reliability",
+            "--disable-component-update",
+            "--disable-hang-monitor",
+            "--disable-prompt-on-repost",
+            "--disable-breakpad",
+            "--disk-cache-size=0",
+            "--media-cache-size=0",
+            "--js-flags=--max-old-space-size=128",
         ],
     )
-    context = browser.new_context()
+    # Viewport pequeño: menos memoria de rasterizado que el 1280x720 por
+    # defecto: no necesitamos ver la pagina, solo leer su DOM/red.
+    context = browser.new_context(viewport={"width": 800, "height": 600})
     _block_unnecesary_resources(context)
     page = context.new_page()
     page.goto(LOGIN_URL)
