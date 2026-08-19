@@ -230,7 +230,7 @@
     <div class="stat-grid" id="stat-grid"></div>
 
     <div class="card" style="margin-bottom:20px;">
-      <h2>Evolución de la cartera</h2>
+      <h2>Evolución de tu patrimonio</h2>
       <div id="chart-evolucion"></div>
     </div>
 
@@ -267,7 +267,7 @@ function slotFor(nombre, order) {
 
 function parseEfectivo(str) {
   if (!str) return null;
-  const cleaned = str.replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+  const cleaned = String(str).replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
   const n = parseFloat(cleaned);
   return isNaN(n) ? null : n;
 }
@@ -319,6 +319,9 @@ function yAxis(minV, maxV, padL, padR, padT, width, height, ticks) {
 }
 
 const RANGE_OPTIONS = [
+  { key: '1S', label: '1S', days: 7 },
+  { key: '1M', label: '1M', months: 1 },
+  { key: '2M', label: '2M', months: 2 },
   { key: '3M', label: '3M', months: 3 },
   { key: '6M', label: '6M', months: 6 },
   { key: 'YTD', label: 'YTD' },
@@ -336,6 +339,7 @@ function rangeCutoff(rangeKey) {
   if (rangeKey === 'YTD') return new Date(now.getFullYear(), 0, 1);
   const opt = RANGE_OPTIONS.find(o => o.key === rangeKey);
   const d = new Date(now);
+  if (opt.days) d.setDate(d.getDate() - opt.days);
   if (opt.months) d.setMonth(d.getMonth() - opt.months);
   if (opt.years) d.setFullYear(d.getFullYear() - opt.years);
   return d;
@@ -428,11 +432,48 @@ function drawSeriesChart(chartId, points, seriesDefs, opts) {
     ${legend}`;
 }
 
-function renderEvolutionChart(operaciones, chartId) {
-  const points = (operaciones || [])
-    .map(op => ({ fecha: parseFechaEs(op.fecha), valor: parseEfectivo(op.efectivo) }))
-    .filter(p => p.valor !== null && !isNaN(p.fecha))
+function computeSharesTimeline(operaciones) {
+  // Reconstruye cuantas participaciones tenias justo despues de cada
+  // operacion, usando tu propio historico en R4: "efectivo" es la
+  // valoracion de la posicion en esa fecha y "valorParticipacion" el precio
+  // del fondo ese dia, asi que su division da las participaciones que
+  // tenias en ese momento (sin necesidad de interpretar el "concepto").
+  return (operaciones || [])
+    .map(op => {
+      const fecha = parseFechaEs(op.fecha);
+      const valorPart = parseEfectivo(op.valorParticipacion);
+      const efectivo = parseEfectivo(op.efectivo);
+      if (!(fecha instanceof Date) || isNaN(fecha) || !valorPart || efectivo === null) return null;
+      return { fecha, shares: efectivo / valorPart };
+    })
+    .filter(Boolean)
     .sort((a, b) => a.fecha - b.fecha);
+}
+
+function computeFondoValueSeries(historico, operaciones, participacionesActuales) {
+  const timeline = computeSharesTimeline(operaciones);
+  if (!timeline.length) return [];
+
+  const primeraFecha = timeline[0].fecha;
+  const sharesActuales = Number(participacionesActuales) || 0;
+
+  let idx = 0;
+  return (historico || [])
+    .map(h => ({ fecha: new Date(h.fecha), precio: Number(h.valor) || 0 }))
+    .filter(p => p.fecha instanceof Date && !isNaN(p.fecha) && p.fecha >= primeraFecha)
+    .sort((a, b) => a.fecha - b.fecha)
+    .map(p => {
+      while (idx + 1 < timeline.length && timeline[idx + 1].fecha <= p.fecha) idx += 1;
+      // el tramo mas reciente usa siempre las participaciones actuales
+      // reales de R4 (asi refleja al instante cualquier aportacion nueva),
+      // no la ultima cifra derivada del historico de operaciones
+      const shares = idx === timeline.length - 1 ? sharesActuales : timeline[idx].shares;
+      return { fecha: p.fecha, valor: shares * p.precio };
+    });
+}
+
+function renderFondoEvolutionChart(fondo, chartId) {
+  const points = computeFondoValueSeries(fondo.historicoFinect, fondo.operaciones, fondo.participaciones);
 
   if (points.length < 2) return '';
 
@@ -440,7 +481,7 @@ function renderEvolutionChart(operaciones, chartId) {
     points,
     views: [{
       targetId: chartId,
-      series: [{ key: 'valor', color: 'var(--slot-1)', label: 'Valoración' }],
+      series: [{ key: 'valor', color: 'var(--slot-1)', label: 'Valor de tu posición' }],
       opts: { width: 560, height: 160, padL: 64, padR: 16, padT: 14, padB: 22 },
     }],
     activeRange: 'ALL',
@@ -453,42 +494,32 @@ function renderEvolutionChart(operaciones, chartId) {
     </div>`;
 }
 
-function computeCarteraSeries(fondos) {
-  const eventosPorFondo = (fondos || []).map(f => (f.operaciones || [])
-    .map(op => ({
-      fecha: parseFechaEs(op.fecha),
-      esAporte: (op.concepto || '').toUpperCase().includes('SUSCRIP'),
-      importeBruto: parseEfectivo(op.importeBruto),
-      efectivo: parseEfectivo(op.efectivo),
+function computeEvolucionPatrimonioSeries(entries) {
+  const points = (entries || [])
+    .map(e => ({
+      fecha: new Date(e.fecha),
+      valor: Number(e.valoracion) || 0,
+      entradas: Number(e.entradas) || 0,
+      salidas: Number(e.salidas) || 0,
     }))
-    .filter(e => e.fecha instanceof Date && !isNaN(e.fecha))
-  );
+    .filter(p => p.fecha instanceof Date && !isNaN(p.fecha))
+    .sort((a, b) => a.fecha - b.fecha);
 
-  const fechasSet = new Set();
-  eventosPorFondo.forEach(evs => evs.forEach(e => fechasSet.add(e.fecha.getTime())));
-  const fechas = [...fechasSet].sort((a, b) => a - b).map(t => new Date(t));
-
-  const ultimoValorPorFondo = eventosPorFondo.map(() => 0);
-  const aportadoPorFondo = eventosPorFondo.map(() => 0);
-
-  return fechas.map(fecha => {
-    eventosPorFondo.forEach((evs, i) => {
-      evs.forEach(e => {
-        if (e.fecha.getTime() !== fecha.getTime()) return;
-        if (e.esAporte && e.importeBruto) aportadoPorFondo[i] += e.importeBruto;
-        if (e.efectivo !== null) ultimoValorPorFondo[i] = e.efectivo;
-      });
-    });
-    const aportado = aportadoPorFondo.reduce((s, v) => s + v, 0);
-    const valor = ultimoValorPorFondo.reduce((s, v) => s + v, 0);
-    return { fecha, aportado, valor, beneficio: valor - aportado };
+  // "aportado" = capital invertido acumulado: arranca en la primera
+  // valoracion real y luego solo se mueve por flujo neto (entradas -
+  // salidas), igual que hace el propio widget de R4.
+  let aportado = 0;
+  return points.map((p, i) => {
+    const netFlow = p.entradas - p.salidas;
+    aportado = i === 0 ? p.valor : aportado + netFlow;
+    return { fecha: p.fecha, valor: p.valor, aportado, beneficio: p.valor - aportado };
   });
 }
 
-function renderCarteraEvolutionChart(fondos) {
+function renderCarteraEvolutionChart(evolucionPatrimonio) {
   const chartId = 'cartera-evo';
   const container = document.getElementById('chart-evolucion');
-  const serie = computeCarteraSeries(fondos);
+  const serie = computeEvolucionPatrimonioSeries(evolucionPatrimonio);
 
   if (serie.length < 2) {
     container.innerHTML = '<div style="color:var(--text-muted); font-size:13px;">Aún no hay suficiente histórico para dibujar la evolución.</div>';
@@ -605,7 +636,7 @@ function renderDashboard(data) {
     statTile('Saldo disponible', eur(data.saldoDisponible)),
   ].join('');
 
-  renderCarteraEvolutionChart(data.fondos);
+  renderCarteraEvolutionChart(data.evolucionPatrimonio);
 
   const tipo = data.distribuciones['DISTRI_CATEGORIA_TIPO_ACTIVO'] || [];
   renderBarList(document.getElementById('chart-tipo'), tipo, TIPO_ORDER);
@@ -640,7 +671,7 @@ function renderDashboard(data) {
           <div><div class="m-label">Beneficio</div><div class="m-value ${rClass}">${f.beneficio >= 0 ? '+' : ''}${eur(f.beneficio)}</div></div>
           <div><div class="m-label">Rentabilidad</div><div class="m-value ${rClass}">${rSigno}${f.rentabilidadPct.toFixed(2)}%</div></div>
         </div>
-        ${renderEvolutionChart(f.operaciones, 'fondo-evo-' + f.isin)}
+        ${renderFondoEvolutionChart(f, 'fondo-evo-' + f.isin)}
         <details class="ops">
           <summary>Ver operaciones (${(f.operaciones || []).length})</summary>
           <div class="ops-table-wrap">

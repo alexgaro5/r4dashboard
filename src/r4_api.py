@@ -1,5 +1,5 @@
 from renta4_scraper import login
-from finect import finect_url_for_isin
+from finect import fetch_fund_history, finect_url_for_isin
 
 PORTAL_URL = "https://www.r4.com/portal?TX=goto&FWD=MAIN10_REDIRECT"
 
@@ -30,8 +30,9 @@ _JS_EXTRAER_FILAS = """rows => rows.map(row => {
 
 
 def _fetch_portal_data(page):
-    """Navega al portal principal y captura las respuestas JSON de patrimonio
-    y (si aparece en la misma carga) planes de ahorro periodico."""
+    """Navega al portal principal y captura las respuestas JSON de patrimonio,
+    evolucion del patrimonio (rentabilidad) y (si aparece en la misma carga)
+    planes de ahorro periodico."""
     captured = {}
 
     def handle_response(response):
@@ -43,6 +44,13 @@ def _fetch_portal_data(page):
                 return
             if isinstance(body, dict) and isinstance(body.get("summary"), dict):
                 captured["patrimonio"] = body
+        elif "rentabilidad" not in captured and "apificacion/rentabilidad" in url:
+            try:
+                body = response.json()
+            except Exception:
+                return
+            if isinstance(body, dict) and "data" in body:
+                captured["rentabilidad"] = body
         elif "ahorro" not in captured and "ahorro-periodico/planes-ahorro" in url:
             try:
                 body = response.json()
@@ -61,10 +69,11 @@ def _fetch_portal_data(page):
     else:
         raise TimeoutError("No se recibio la respuesta de patrimonios a tiempo")
 
-    # el plan de ahorro es opcional: le damos un margen corto extra por si
-    # llega despues, pero no bloqueamos si nunca aparece
+    # rentabilidad (evolucion del patrimonio) y plan de ahorro son opcionales:
+    # les damos un margen corto extra por si llegan despues, sin bloquear si
+    # nunca aparecen
     for _ in range(15):
-        if "ahorro" in captured:
+        if "rentabilidad" in captured and "ahorro" in captured:
             break
         page.wait_for_timeout(200)
 
@@ -98,10 +107,12 @@ def fetch_dashboard_completo(username, password, headless=True):
     raw = _fetch_portal_data(page)
     resumen = summarize_patrimonio(raw["patrimonio"])
     resumen["planesAhorro"] = summarize_planes_ahorro(raw.get("ahorro"))
+    resumen["evolucionPatrimonio"] = summarize_rentabilidad(raw.get("rentabilidad"))
 
     for fondo in resumen["fondos"]:
         fondo["operaciones"] = fetch_fondo_operaciones(page, fondo["url_detalle"])
         fondo["finectUrl"] = finect_url_for_isin(fondo["isin"])
+        fondo["historicoFinect"] = fetch_fund_history(fondo["isin"])
 
     browser.close()
     playwright.stop()
@@ -181,3 +192,20 @@ def summarize_planes_ahorro(ahorro_data):
                 }
             )
     return planes
+
+
+def summarize_rentabilidad(rentabilidad_data):
+    """Serie temporal real de evolucion del patrimonio (valoracion, entradas
+    y salidas por fecha), tal como la usa el propio widget de R4."""
+    if not rentabilidad_data:
+        return []
+
+    return [
+        {
+            "fecha": e.get("fecha"),
+            "valoracion": e.get("valoracion") or 0,
+            "entradas": e.get("entradas") or 0,
+            "salidas": e.get("salidas") or 0,
+        }
+        for e in rentabilidad_data.get("data", [])
+    ]
